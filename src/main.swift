@@ -416,6 +416,25 @@ func runProcess(_ launchPath: String, _ arguments: [String]) throws -> ProcessRe
     )
 }
 
+// MARK: - Shell 路径处理
+
+/// 把设备端路径包成 shell 单引号安全字符串，用于 `adb shell stat/find` 等命令。
+/// `adb shell` 会把后续参数拼成一条命令字符串在设备端执行，含空格或非 ASCII 字符的
+/// 文件名若不加引号会被拆断，导致 stat 查不到文件、传输进度拿不到已写入大小。
+/// 单引号内部无法直接表示单引号，按 `'\''` 转义。
+func quotedShellPath(_ path: String) -> String {
+    "'" + path.replacingOccurrences(of: "'", with: "'\\''") + "'"
+}
+
+/// 查询设备端单个文件的已写入大小（shell 转义后的 stat）。
+/// 返回 nil 表示查询失败（文件尚未创建等），调用方据此保持进度不变。
+func remoteFileWrittenBytes(_ adb: String, serial: String, path: String) -> Int64? {
+    guard let r = try? runProcess(
+            adb, ["-s", serial, "shell", "stat", "-c", "%s", quotedShellPath(path)]),
+          r.exitCode == 0 else { return nil }
+    return Int64(r.stdout.trimmingCharacters(in: .whitespacesAndNewlines))
+}
+
 // MARK: - ADB 桥接
 
 enum ADBError: LocalizedError {
@@ -713,11 +732,9 @@ enum ADB {
 
     static func remoteTotalBytes(_ adb: String, serial: String, path: String, isDirectory: Bool) -> Int64 {
         if !isDirectory {
-            guard let r = try? runProcess(adb, ["-s", serial, "shell", "stat", "-c", "%s", path]),
-                  r.exitCode == 0 else { return 0 }
-            return Int64(r.stdout.trimmingCharacters(in: .whitespacesAndNewlines)) ?? 0
+            return remoteFileWrittenBytes(adb, serial: serial, path: path) ?? 0
         }
-        let quoted = "'" + path.replacingOccurrences(of: "'", with: "'\\''") + "'"
+        let quoted = quotedShellPath(path)
         // toybox find 的 -exec 经 adb 二次解析易丢 \;；用 find -print0 | xargs -0 stat 更稳
         let cmd = "find \(quoted) -type f -print0 | xargs -0 stat -c %s"
         guard let r = try? runProcess(adb, ["-s", serial, "shell", cmd]) else { return 0 }
@@ -931,10 +948,11 @@ final class TransferManager: ObservableObject {
                         // 设备端目录：stat 只返回 inode 大小，须递归求和已写入字节
                         written = ADB.remoteTotalBytes(
                             item.adb, serial: item.serial, path: destFile, isDirectory: true)
-                    } else if let r = try? runProcess(
-                        item.adb, ["-s", item.serial, "shell", "stat", "-c", "%s", destFile]),
-                        r.exitCode == 0 {
-                        written = Int64(r.stdout.trimmingCharacters(in: .whitespacesAndNewlines)) ?? 0
+                    } else {
+                        // 设备端单文件：stat -c %s 查已写入大小；路径经 shell 转义，
+                        // 避免含空格/非 ASCII 的文件名被拆断导致进度一直为 0。
+                        written = remoteFileWrittenBytes(
+                            item.adb, serial: item.serial, path: destFile) ?? 0
                     }
                     if item.totalBytes > 0, written > 0 {
                         let frac = min(0.99, Double(written) / Double(item.totalBytes))
@@ -3037,6 +3055,7 @@ struct TransferPanelView: View {
                             TransferRowView(item: item)
                         }
                     }
+                    .frame(maxWidth: .infinity, alignment: .leading)
                     .padding(.horizontal, 14)
                     .padding(.bottom, 8)
                 }
@@ -3058,45 +3077,53 @@ struct TransferRowView: View {
                 .font(.caption)
                 .lineLimit(1)
                 .truncationMode(.middle)
-                .frame(maxWidth: 240, alignment: .leading)
-            switch item.state {
-            case .queued:
-                Text(L.s("transfer.queued"))
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
-                Spacer()
-            case .running:
-                if let progress = item.progress {
-                    ProgressView(value: progress)
-                        .frame(width: 110)
-                    Text("\(Int(progress * 100))%")
-                        .font(.caption.monospacedDigit())
-                        .foregroundStyle(.secondary)
-                        .frame(width: 38, alignment: .trailing)
-                } else {
-                    ProgressView()
-                        .controlSize(.mini)
-                    Text(L.s("transfer.running"))
+                .help(item.name)
+            // 布局优先级：文件名用 Spacer(minLength:) 推开，Group 内的进度条按最小宽度排列，
+            // 整行通过 VStack .frame(maxWidth: .infinity) 撑满容器，右侧不再留大片空白。
+            Group {
+                switch item.state {
+                case .queued:
+                    Text(L.s("transfer.queued"))
                         .font(.caption)
                         .foregroundStyle(.secondary)
+                case .running:
+                    if let progress = item.progress {
+                        HStack(spacing: 8) {
+                            ProgressView(value: progress)
+                                .frame(minWidth: 120)
+                            Text("\(Int(progress * 100))%")
+                                .font(.caption.monospacedDigit())
+                                .foregroundStyle(.secondary)
+                                .frame(width: 40, alignment: .trailing)
+                        }
+                    } else {
+                        HStack(spacing: 8) {
+                            ProgressView()
+                                .controlSize(.mini)
+                            Text(L.s("transfer.running"))
+                                .font(.caption)
+                                .foregroundStyle(.secondary)
+                        }
+                    }
+                case .done:
+                    Text(item.message ?? L.s("status.done"))
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                        .lineLimit(1)
+                        .truncationMode(.tail)
+                case .failed:
+                    Text(item.message ?? L.s("status.failed"))
+                        .font(.caption)
+                        .foregroundStyle(.orange)
+                        .lineLimit(1)
+                        .truncationMode(.tail)
                 }
-                Spacer()
-            case .done:
-                Text(item.message ?? L.s("status.done"))
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
-                    .lineLimit(1)
-                    .truncationMode(.tail)
-                Spacer()
+            }
+            Spacer(minLength: 8)
+            if item.state == .done {
                 Image(systemName: "checkmark.circle.fill")
                     .foregroundStyle(.green)
-            case .failed:
-                Text(item.message ?? L.s("status.failed"))
-                    .font(.caption)
-                    .foregroundStyle(.orange)
-                    .lineLimit(1)
-                    .truncationMode(.tail)
-                Spacer()
+            } else if item.state == .failed {
                 Image(systemName: "xmark.circle.fill")
                     .foregroundStyle(.orange)
             }
