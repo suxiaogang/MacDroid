@@ -225,6 +225,10 @@ struct AndroidDeviceInfo: Equatable {
     var abi: String?
     var batteryLevel: Int?
     var batteryCharging: Bool?
+    var kernelVersion: String?  // Linux 内核版本
+    var processor: String?      // 处理器型号（SoC 名，如 "Qualcomm SM8250" / "Kirin 9000"）
+    var memoryTotalMB: Int64?   // 物理内存总量（MB）
+    var uptimeSeconds: Int64?   // 设备运行时长（秒）
 
     /// 「品牌 型号」，去重（部分 ROM 的 model 已含品牌）
     var nameText: String? {
@@ -237,14 +241,119 @@ struct AndroidDeviceInfo: Equatable {
 
     var systemText: String? {
         guard let v = androidVersion, !v.isEmpty else { return nil }
-        if let s = sdkLevel, !s.isEmpty { return "Android \(v) (API \(s))" }
+        // 保持与 Mac 栏「macOS x.x」相同的简洁风格，不带 API 号
         return "Android \(v)"
+    }
+
+    /// 内存描述：如 "3 GB"
+    var memoryText: String? {
+        guard let mb = memoryTotalMB, mb > 0 else { return nil }
+        if mb >= 1024 {
+            return String(format: "%.1f GB", Double(mb) / 1024.0)
+        }
+        return "\(mb) MB"
+    }
+
+    /// 运行时长描述：如 "1d 2h" / "3h 20m"
+    var uptimeText: String? {
+        guard let s = uptimeSeconds, s > 60 else { return nil }
+        let total = Int(s)
+        let days = total / 86_400
+        let hours = (total % 86_400) / 3_600
+        let minutes = (total % 3_600) / 60
+        if days > 0 { return "\(days)d \(hours)h" }
+        if hours > 0 { return "\(hours)h \(minutes)m" }
+        return "\(minutes)m"
     }
 }
 
 /// 字节数格式化（与文件列表口径一致）
 func storageSizeText(_ bytes: Int64) -> String {
     ByteCountFormatter.string(fromByteCount: bytes, countStyle: .file)
+}
+
+/// Mac 主机概况：芯片 · 核心 · 内存 · GPU · 系统 · 架构 · 运行时长
+/// （用于 Mac 栏底部设备信息行，尽量与 Android 栏字段数量对称）
+struct MacDeviceInfo: Equatable {
+    var chip: String?       // CPU 芯片名，如 "Apple M1" / "Intel Core i7"
+    var cores: Int?         // 物理核心数
+    var logicalCores: Int?  // 逻辑核心数（含超线程）
+    var memoryBytes: Int64? // 物理内存字节数
+    var gpu: String?        // GPU 芯片名，如 "Apple M1" / "Intel Iris Plus"
+    var gpuCores: Int?      // GPU 核心数（Apple Silicon 有，Intel 可能无）
+    var osVersion: String?  // macOS 版本，如 "14.5.0"
+    var arch: String?       // 架构，如 "arm64" / "x86_64"
+    var modelIdentifier: String? // 机器标识符，如 "Macmini9,1"
+    var marketingModel: String?  // 营销型号名，如 "Mac mini"（取不到时回退标识符）
+    var uptimeSeconds: TimeInterval? // 系统运行时长（秒）
+    var loadAverage: Double? // 1 分钟 CPU 负载均值
+    var processCount: Int?   // 当前进程数
+
+    /// CPU 描述：芯片名，如 "Apple M1"
+    var cpuText: String? {
+        guard let c = chip, !c.isEmpty else { return nil }
+        return c
+    }
+
+    /// 核心描述：物理(+逻辑)核心，如 "8 cores" / "8c / 16t"
+    var coresText: String? {
+        guard let physical = cores, physical > 0 else { return nil }
+        if let logical = logicalCores, logical > physical {
+            return "\(physical)c / \(logical)t"
+        }
+        return "\(physical) cores"
+    }
+
+    /// GPU 描述：芯片名 + 核心数，如 "Apple M1 (8c)" / "Intel Iris Plus"
+    var gpuText: String? {
+        guard let g = gpu, !g.isEmpty else { return nil }
+        if let n = gpuCores { return "\(g) (\(n)c)" }
+        return g
+    }
+
+    /// 系统版本描述，如 "macOS 14.5.0"
+    var osText: String? {
+        guard let v = osVersion, !v.isEmpty else { return nil }
+        return "macOS \(v)"
+    }
+
+    /// 内存描述：如 "16 GB"
+    var memoryText: String? {
+        guard let b = memoryBytes, b > 0 else { return nil }
+        let gb = Double(b) / 1_073_741_824.0
+        return String(format: "%.0f GB", gb)
+    }
+
+    /// 运行时长描述：如 "1h 47m" / "3d 2h"
+    var uptimeText: String? {
+        guard let s = uptimeSeconds, s > 60 else { return nil }
+        let total = Int(s)
+        let days = total / 86_400
+        let hours = (total % 86_400) / 3_600
+        let minutes = (total % 3_600) / 60
+        if days > 0 { return "\(days)d \(hours)h" }
+        if hours > 0 { return "\(hours)h \(minutes)m" }
+        return "\(minutes)m"
+    }
+
+    /// 负载描述：如 "load 2.33"
+    var loadText: String? {
+        guard let l = loadAverage else { return nil }
+        return String(format: "load %.2f", l)
+    }
+
+    /// 进程数描述：如 "512 procs"
+    var processText: String? {
+        guard let n = processCount, n > 0 else { return nil }
+        return "\(n) procs"
+    }
+
+    /// 是否有任何可显示字段
+    var isEmpty: Bool {
+        return marketingModel == nil && cpuText == nil && memoryText == nil &&
+               gpuText == nil && osText == nil && arch == nil &&
+               modelIdentifier == nil && uptimeText == nil && coresText == nil
+    }
 }
 
 func entrySizeText(_ entry: FileEntry) -> String {
@@ -727,7 +836,177 @@ enum ADB {
         }
         // 全空视为不可用
         if info.nameText == nil && info.systemText == nil && info.batteryLevel == nil { return nil }
+        // 内核版本 / 内存 / 运行时长：单独一次调用，失败仅影响这些附加字段，不波及主信息
+        collectAndroidExtraInfo(adb, serial: serial, into: &info)
         return info
+    }
+
+    /// 补充读取处理器型号 / 内核版本 / 内存总量 / 运行时长（Android 7 的 toybox 可能缺 awk/grep，
+    /// 故不依赖 exit code，逐条解析输出，取不到即留空）。
+    private static func collectAndroidExtraInfo(_ adb: String, serial: String,
+                                                 into info: inout AndroidDeviceInfo) {
+        // 处理器/SoC 型号：逐个属性键回退（各厂商实现不一）
+        // 优先 ro.board.platform，其次 ro.hardware，再次 ro.product.board
+        for key in ["ro.board.platform", "ro.hardware", "ro.product.board"] {
+            if let r = try? runProcess(adb, ["-s", serial, "shell", "getprop", key]),
+               r.exitCode == 0 {
+                let s = r.stdout.trimmingCharacters(in: .whitespacesAndNewlines)
+                // 过滤空值和明显无效值
+                if !s.isEmpty && s != "unknown" {
+                    info.processor = s
+                    break
+                }
+            }
+        }
+        // 优先组合 ro.soc.manufacturer + ro.soc.model（Android 12+）
+        if let rMfr = try? runProcess(adb, ["-s", serial, "shell", "getprop", "ro.soc.manufacturer"]),
+           let rModel = try? runProcess(adb, ["-s", serial, "shell", "getprop", "ro.soc.model"]),
+           rMfr.exitCode == 0, rModel.exitCode == 0 {
+            let mfr = rMfr.stdout.trimmingCharacters(in: .whitespacesAndNewlines)
+            let model = rModel.stdout.trimmingCharacters(in: .whitespacesAndNewlines)
+            if !mfr.isEmpty && !model.isEmpty && mfr != "unknown" {
+                info.processor = "\(mfr) \(model)"
+            }
+        }
+        guard let r = try? runProcess(adb, ["-s", serial, "shell", "uname -r"]) else { return }
+        if r.exitCode == 0 {
+            let s = r.stdout.trimmingCharacters(in: .whitespacesAndNewlines)
+            if !s.isEmpty { info.kernelVersion = s }
+        }
+        // /proc/meminfo 首行 "MemTotal:  3912344 kB"
+        if let r = try? runProcess(adb, ["-s", serial, "shell", "cat /proc/meminfo"]),
+           r.exitCode == 0 {
+            for line in r.stdout.split(separator: "\n") {
+                let t = line.trimmingCharacters(in: .whitespaces)
+                if t.hasPrefix("MemTotal:") {
+                    // 去掉 "MemTotal:" 后取数字（kB）
+                    let kb = t.dropFirst("MemTotal:".count)
+                        .trimmingCharacters(in: CharacterSet(charactersIn: " kB"))
+                    info.memoryTotalMB = Int64(kb).map { $0 / 1024 }
+                    break
+                }
+            }
+        }
+        // /proc/uptime 首个数字为运行秒数（用 cut 避免 awk）
+        if let r = try? runProcess(adb, ["-s", serial, "shell",
+                                         "cat /proc/uptime"]),
+           r.exitCode == 0 {
+            let first = r.stdout.trimmingCharacters(in: .whitespacesAndNewlines)
+                .split(separator: " ").first.map(String.init) ?? ""
+            info.uptimeSeconds = Int64(first.split(separator: ".").first.map(String.init) ?? "")
+        }
+    }
+
+    /// 采集本机 Mac 概况：CPU、核心、内存、GPU、macOS 版本、架构、机器标识符、运行时长。
+    /// sysctl 取硬件参数；ProcessInfo 取系统版本/架构；system_profiler 取 GPU；
+    /// uptime 命令取运行时长；mach host_statistics 取 1 分钟负载；ps 取进程数。
+    static func collectMacDeviceInfo() -> MacDeviceInfo {
+        var info = MacDeviceInfo()
+
+        // 1) CPU 芯片名：Apple Silicon 用 hw.brand，Intel 用 machdep.cpu.brand_string
+        info.chip = runSysctl("hw.brand")
+            ?? runSysctl("machdep.cpu.brand_string")?
+                .replacingOccurrences(of: "(R)", with: "")
+                .replacingOccurrences(of: "(TM)", with: "")
+            ?? runSysctl("hw.model")   // 兜底
+        info.chip = info.chip?.trimmingCharacters(in: .whitespacesAndNewlines)
+
+        // 2) 物理核心 / 逻辑核心
+        if let s = runSysctl("hw.physicalcpu") {
+            info.cores = Int(s.trimmingCharacters(in: .whitespacesAndNewlines))
+        }
+        if let s = runSysctl("hw.logicalcpu") {
+            info.logicalCores = Int(s.trimmingCharacters(in: .whitespacesAndNewlines))
+        }
+
+        // 3) 物理内存字节数
+        if let s = runSysctl("hw.memsize") {
+            info.memoryBytes = Int64(s.trimmingCharacters(in: .whitespacesAndNewlines))
+        }
+
+        // 4) 架构 + 机器标识符 + 营销型号名
+        info.arch = runSysctl("hw.machine")?.trimmingCharacters(in: .whitespacesAndNewlines)
+        info.modelIdentifier = runSysctl("hw.model")?.trimmingCharacters(in: .whitespacesAndNewlines)
+        // 营销型号名（如 "Mac mini"）从 system_profiler SPHardwareDataType 的 "Model Name" 取；
+        // 取不到时回退到机器标识符
+        info.marketingModel = collectMacModelName() ?? info.modelIdentifier
+
+        // 5) macOS 版本：用结构化数字，不受系统语言影响；patch=0 时省略
+        let ver = ProcessInfo.processInfo.operatingSystemVersion
+        if ver.patchVersion > 0 {
+            info.osVersion = "\(ver.majorVersion).\(ver.minorVersion).\(ver.patchVersion)"
+        } else {
+            info.osVersion = "\(ver.majorVersion).\(ver.minorVersion)"
+        }
+
+        // 6) GPU：system_profiler SPDisplaysDataType — 芯片名 + 核心数
+        collectGPUInfo(into: &info)
+
+        // 7) 系统运行时长（ProcessInfo.systemUptime，秒）
+        info.uptimeSeconds = ProcessInfo.processInfo.systemUptime
+
+        // 8) 1 分钟负载均值（getloadavg C 函数）
+        var loads: [Double] = [0, 0, 0]
+        if getloadavg(&loads, 3) == 3 {
+            info.loadAverage = loads[0]
+        }
+
+        // 9) 进程数（sysctl kern.proc.all 的长度）
+        var mib: [Int32] = [CTL_KERN, KERN_PROC, KERN_PROC_ALL, 0]
+        var size: Int = 0
+        sysctl(&mib, 4, nil, &size, nil, 0)
+        info.processCount = size / MemoryLayout<kinfo_proc>.stride
+
+        // 全空视为不可用
+        if info.isEmpty { return info }
+        return info
+    }
+
+    /// 从 system_profiler SPHardwareDataType 解析 "Model Name"（营销型号名，如 "Mac mini"）。
+    private static func collectMacModelName() -> String? {
+        guard let r = try? runProcess("/usr/sbin/system_profiler",
+                                       ["SPHardwareDataType"]),
+              r.exitCode == 0 else { return nil }
+        for line in r.stdout.split(separator: "\n") {
+            let t = line.trimmingCharacters(in: .whitespaces)
+            if t.hasPrefix("Model Name:") {
+                let s = t.dropFirst("Model Name:".count)
+                           .trimmingCharacters(in: .whitespacesAndNewlines)
+                return s.isEmpty ? nil : s
+            }
+        }
+        return nil
+    }
+
+    /// 从 system_profiler SPDisplaysDataType 解析 GPU 芯片名和核心数。
+    /// Apple Silicon: "Chipset Model: Apple M1" / "Total Number of Cores: 8"
+    /// Intel Mac:     "Chipset Model: Intel Iris Plus Graphics 640"
+    private static func collectGPUInfo(into info: inout MacDeviceInfo) {
+        guard let r = try? runProcess("/usr/sbin/system_profiler",
+                                       ["SPDisplaysDataType"]),
+              r.exitCode == 0 else { return }
+        for line in r.stdout.split(separator: "\n") {
+            let t = line.trimmingCharacters(in: .whitespaces)
+            if t.hasPrefix("Chipset Model:") {
+                if info.gpu == nil {
+                    info.gpu = t.dropFirst("Chipset Model:".count)
+                                  .trimmingCharacters(in: .whitespacesAndNewlines)
+                }
+            } else if t.hasPrefix("Total Number of Cores:") {
+                if info.gpuCores == nil {
+                    info.gpuCores = Int(t.dropFirst("Total Number of Cores:".count)
+                                          .trimmingCharacters(in: .whitespacesAndNewlines))
+                }
+            }
+        }
+    }
+
+    /// 执行 sysctl -n <name>，返回 stdout（失败返回 nil）
+    private static func runSysctl(_ name: String) -> String? {
+        guard let r = try? runProcess("/usr/sbin/sysctl", ["-n", name]),
+              r.exitCode == 0 else { return nil }
+        let s = r.stdout.trimmingCharacters(in: .whitespacesAndNewlines)
+        return s.isEmpty ? nil : s
     }
 
     static func remoteTotalBytes(_ adb: String, serial: String, path: String, isDirectory: Bool) -> Int64 {
@@ -741,6 +1020,89 @@ enum ADB {
         return r.stdout.split(separator: "\n").reduce(Int64(0)) {
             $0 + (Int64($1.trimmingCharacters(in: .whitespaces)) ?? 0)
         }
+    }
+
+    /// 列出设备已安装应用。用 `pm list packages -f` 一次取回全部包名，
+    /// `package:<apk路径>=<包名>` 行解析；系统应用靠 apk 路径前缀（/system、/product 等）判定。
+    /// 体积用一条 `stat -c '%s %n'` 批量取所有 apk 字节数（并按需回退到 `du -k`），
+    /// 避免逐包 spawn adb 拖慢加载。
+    static func listApps(_ adb: String, serial: String) throws -> [AndroidApp] {
+        let result = try runProcess(adb, ["-s", serial, "shell", "pm", "list", "packages", "-f"])
+        let systemPrefixes = ["/system/", "/product/", "/vendor/", "/odm/", "/apex/"]
+        // 先收集（包名, apk路径, 是否系统），体积稍后批量补
+        var collected: [(pkg: String, apk: String, isSystem: Bool)] = []
+        var seen = Set<String>()
+        for rawLine in result.stdout.split(separator: "\n") {
+            let line = rawLine.trimmingCharacters(in: .whitespacesAndNewlines)
+            // 形如：package:/data/app/.../base.apk=com.example.app
+            guard line.hasPrefix("package:") else { continue }
+            let body = line.dropFirst("package:".count)
+            guard let eq = body.lastIndex(of: "=") else { continue }
+            let apk = String(body[body.startIndex..<eq])
+            let pkg = String(body[body.index(after: eq)...])
+            guard !pkg.isEmpty, !seen.contains(pkg) else { continue }
+            seen.insert(pkg)
+            let isSystem = systemPrefixes.contains { apk.hasPrefix($0) }
+            collected.append((pkg, apk, isSystem))
+        }
+
+        // 批量取体积：优先 stat（精确字节），失败回退 du -k（块 × 1024）
+        // Android 7 的 toybox du 不支持 -b，但 stat -c '%s %n' 可用
+        let sizeByApk = collected.isEmpty
+            ? [:]
+            : bulkApkSizes(adb, serial: serial, apks: collected.map(\.apk))
+
+        return collected.map {
+            AndroidApp(packageName: $0.pkg, isSystem: $0.isSystem,
+                       sizeBytes: sizeByApk[$0.apk])
+        }.sorted { $0.packageName.localizedCaseInsensitiveCompare($1.packageName) == .orderedAscending }
+    }
+
+    /// 批量获取 apk 体积（字节）。先试 `stat -c '%s %n'`，返回非空且能解析出条目即用；
+    /// 否则回退 `du -k`（×1024 转字节）。返回 apk 路径 -> 字节数。
+    private static func bulkApkSizes(
+        _ adb: String, serial: String, apks: [String]
+    ) -> [String: Int64] {
+        guard !apks.isEmpty else { return [:] }
+        let quoted = apks.map { quotedShellPath($0) }.joined(separator: " ")
+
+        // 方案 A：stat -c '%s %n'（精确字节，含空格路径安全）
+        if let r = try? runProcess(
+                adb, ["-s", serial, "shell", "stat -c '%s %n' \(quoted) 2>/dev/null"]),
+           r.exitCode == 0 || !r.stdout.isEmpty {
+            var sizes: [String: Int64] = [:]
+            for rawLine in r.stdout.split(separator: "\n") {
+                let line = rawLine.trimmingCharacters(in: .whitespaces)
+                guard let sp = line.firstIndex(of: " ") else { continue }
+                let bytes = Int64(line[..<sp])
+                let path = String(line[line.index(after: sp)...])
+                guard let bytes, !path.isEmpty else { continue }
+                sizes[path] = bytes
+            }
+            if !sizes.isEmpty { return sizes }
+        }
+
+        // 方案 B：du -k（1024 字节块）× 1024 近似字节
+        var sizes: [String: Int64] = [:]
+        if let r = try? runProcess(
+                adb, ["-s", serial, "shell", "du -k \(quoted) 2>/dev/null"]) {
+            for rawLine in r.stdout.split(separator: "\n") {
+                let fields = rawLine.trimmingCharacters(in: .whitespaces)
+                    .split(separator: "\t", maxSplits: 1)
+                guard fields.count == 2, let kb = Int64(fields[0]) else { continue }
+                let path = fields[1].trimmingCharacters(in: .whitespaces)
+                sizes[path] = kb * 1024
+            }
+        }
+        return sizes
+    }
+
+    /// 卸载应用（对普通应用无需 root）。返回是否成功。
+    static func uninstallApp(_ adb: String, serial: String, packageName: String) -> Bool {
+        let r = try? runProcess(adb, ["-s", serial, "uninstall", packageName])
+        guard let r else { return false }
+        // adb uninstall 成功时 stdout 为 "Success"
+        return r.exitCode == 0 && r.stdout.lowercased().contains("success")
     }
 
     /// 解析 toybox/busybox `ls -la` 输出
@@ -1017,6 +1379,30 @@ final class ProgressFlag: @unchecked Sendable {
     }
 }
 
+// MARK: - Android 应用管理
+
+/// 设备上已安装应用的最小信息（包名 + 是否系统应用 + apk 体积）
+struct AndroidApp: Identifiable {
+    let packageName: String
+    let isSystem: Bool
+    /// apk 体积（取不到时为 nil，UI 显示「—」）
+    var sizeBytes: Int64?
+    var id: String { packageName }
+}
+
+/// Android 面板的视图模式：文件浏览 / 应用管理
+enum AndroidPaneMode: String, CaseIterable {
+    case files
+    case apps
+}
+
+/// 应用列表排序字段
+enum AppSortField {
+    case name   // 包名
+    case type   // 系统/第三方
+    case size   // apk 体积
+}
+
 // MARK: - 设备状态
 
 enum DeviceStatus: Equatable {
@@ -1094,6 +1480,8 @@ final class AppModel: ObservableObject {
     @Published var macError: ADBError?
     /// Mac 所在卷的容量
     @Published var macStorage: StorageInfo?
+    /// Mac 主机概况（CPU / 内存），启动时采集一次
+    @Published var macInfo: MacDeviceInfo?
     /// Android 存储与设备概况
     @Published var androidStorage: StorageInfo?
     @Published var androidInfo: AndroidDeviceInfo?
@@ -1116,9 +1504,14 @@ final class AppModel: ObservableObject {
             // 连接建立时拉取存储/设备概况；断开则清空
             if deviceStatus.isConnected {
                 refreshAndroidInfo()
+                // 处于应用视图时，重连后自动刷新应用列表
+                if androidPaneMode == .apps {
+                    refreshAndroidApps()
+                }
             } else {
                 androidStorage = nil
                 androidInfo = nil
+                androidApps = []
             }
         }
     }
@@ -1128,20 +1521,38 @@ final class AppModel: ObservableObject {
     @Published var androidSelection = Set<String>()
     let transfers = TransferManager()
 
+    // Android 应用管理（最小可用版）
+    /// Android 面板视图模式：文件浏览 / 应用管理，默认文件
+    @Published var androidPaneMode: AndroidPaneMode = .files
+    /// 应用视图搜索框文本
+    @Published var appsSearchText = ""
+    @Published var androidApps: [AndroidApp] = []
+    @Published var androidAppsLoading = false
+    /// 应用列表排序字段与方向（@State 在 CLT 工具链不可用，放模型）
+    @Published var appSortField: AppSortField = .name
+    @Published var appSortAscending = true
+    /// 仅显示第三方（User）安装的应用
+    @Published var showUserAppsOnly = false
+    /// 应用卸载/启动的进行中状态（按包名标记，避免重复点击）
+    @Published var busyAppPackages = Set<String>()
+
     /// Mac 侧是否显示隐藏文件（点开头条目），默认关闭，选择持久化
     @Published var showHiddenFiles: Bool = UserDefaults.standard.bool(forKey: "ShowHiddenFiles") {
         didSet {
             guard showHiddenFiles != oldValue else { return }
             UserDefaults.standard.set(showHiddenFiles, forKey: "ShowHiddenFiles")
             reloadMacEntries()
+            reloadAndroidEntries()
         }
     }
     /// 保留未过滤的原始条目，切换开关时无需重新读盘
     private var macAllEntries: [FileEntry] = []
+    private var androidAllEntries: [FileEntry] = []
 
     private var macToken = UUID()
     private var androidToken = UUID()
     private var detectToken = UUID()
+    private var androidAppsToken = UUID()
 
     init() {
         let defaults = UserDefaults.standard
@@ -1175,6 +1586,11 @@ final class AppModel: ObservableObject {
         }
         refreshMac()
         refreshAndroid()
+        // 采集本机概况（CPU / 内存），供 Mac 栏底部信息行显示
+        DispatchQueue.global(qos: .userInitiated).async { [weak self] in
+            let info = ADB.collectMacDeviceInfo()
+            DispatchQueue.main.async { self?.macInfo = info }
+        }
     }
 
     // MARK: 传输
@@ -1628,11 +2044,25 @@ final class AppModel: ObservableObject {
             : entries.filter { !$0.name.hasPrefix(".") && !$0.isHiddenFlag }
     }
 
+    /// Android 侧隐藏过滤：口径与 Mac 一致（点开头 + hidden 标记）
+    private func visibleAndroidEntries(_ entries: [FileEntry]) -> [FileEntry] {
+        showHiddenFiles
+            ? entries
+            : entries.filter { !$0.name.hasPrefix(".") && !$0.isHiddenFlag }
+    }
+
     private func reloadMacEntries() {
         macEntries = visibleMacEntries(macAllEntries)
         // 移除已不可见条目的选中态，避免对隐藏项误操作
         let visible = Set(macEntries.map(\.name))
         macSelection = macSelection.intersection(visible)
+    }
+
+    /// Android 侧：切换隐藏开关时按缓存重算可见条目，并清掉对隐藏项的选中
+    private func reloadAndroidEntries() {
+        androidEntries = visibleAndroidEntries(androidAllEntries)
+        let visible = Set(androidEntries.map(\.name))
+        androidSelection = androidSelection.intersection(visible)
     }
 
     func toggleHiddenFiles() {
@@ -1824,7 +2254,8 @@ final class AppModel: ObservableObject {
                 if status.isConnected { self.refreshAndroidInfo() }
                 if let entries {
                     self.androidPath = path
-                    self.androidEntries = entries
+                    self.androidAllEntries = entries
+                    self.androidEntries = self.visibleAndroidEntries(entries)
                     self.androidSelection = []
                     self.androidError = nil
                     UserDefaults.standard.set(path, forKey: "LastAndroidPath")
@@ -1834,6 +2265,7 @@ final class AppModel: ObservableObject {
                     self.loadAndroid(at: "/sdcard/")
                     return
                 } else {
+                    self.androidAllEntries = []
                     self.androidEntries = []
                     self.androidSelection = []
                     self.androidError = loadError
@@ -1911,15 +2343,108 @@ final class AppModel: ObservableObject {
                 }
                 if let entries {
                     self.androidPath = path
-                    self.androidEntries = entries
+                    self.androidAllEntries = entries
+                    self.androidEntries = self.visibleAndroidEntries(entries)
                     self.androidSelection = []
                     self.androidError = nil
                     UserDefaults.standard.set(path, forKey: "LastAndroidPath")
                 } else {
+                    self.androidAllEntries = []
+                    self.androidEntries = []
                     self.androidSelection = []
                     self.androidError = loadError
                 }
                 self.androidLoading = false
+            }
+        }
+    }
+
+    // MARK: Android 应用管理
+
+    /// 切换 Android 面板视图模式。切到应用视图时自动拉取应用列表，切走时清空搜索词。
+    func switchAndroidPaneMode(_ mode: AndroidPaneMode) {
+        guard mode != androidPaneMode else { return }
+        androidPaneMode = mode
+        appsSearchText = ""
+        if mode == .apps, androidApps.isEmpty {
+            refreshAndroidApps()
+        }
+    }
+
+    /// 刷新设备已安装应用列表。切换到应用视图或断线重连时调用。
+    func refreshAndroidApps() {
+        androidAppsToken = UUID()
+        let token = androidAppsToken
+        guard deviceStatus.isConnected else {
+            androidApps = []
+            return
+        }
+        androidAppsLoading = true
+        DispatchQueue.global(qos: .userInitiated).async { [weak self] in
+            var apps: [AndroidApp] = []
+            do {
+                let resolution = ADB.resolve()
+                guard let adb = resolution.path else {
+                    throw ADBError.notInstalled
+                }
+                let device = try DeviceCache.shared.resolve(adb)
+                apps = try ADB.listApps(adb, serial: device.serial)
+            } catch {
+                apps = []
+            }
+            DispatchQueue.main.async {
+                guard let self, self.androidAppsToken == token else { return }
+                self.androidApps = apps
+                self.androidAppsLoading = false
+            }
+        }
+    }
+
+    /// 启动应用。失败时弹出提示。
+    /// 切换应用列表排序字段。点同一字段翻转升降序，点新字段默认升序。
+    func toggleAppSort(_ field: AppSortField) {
+        if appSortField == field {
+            appSortAscending.toggle()
+        } else {
+            appSortField = field
+            appSortAscending = true
+        }
+    }
+
+    /// 卸载第三方应用。系统应用不开放此操作；卸载前二次确认。
+    func uninstallApp(_ app: AndroidApp) {
+        guard !app.isSystem else { return }
+        guard deviceStatus.isConnected else {
+            presentAlert(L.s("device.disconnected"), L.s("error.connectDevice"))
+            return
+        }
+        guard let adb = ADB.findExecutable(),
+              let device = try? ADB.resolveDevice(adb) else {
+            presentAlert(L.s("error.deviceUnavailable"), L.s("error.refreshRetry"))
+            return
+        }
+        let alert = NSAlert()
+        alert.alertStyle = .warning
+        alert.messageText = L.s("apps.uninstallTitle")
+        alert.informativeText = L.f("apps.uninstallConfirmFormat", app.packageName)
+        alert.addButton(withTitle: L.s("apps.uninstall"))
+        alert.addButton(withTitle: L.s("action.cancel"))
+        NSApp.activate(ignoringOtherApps: true)
+        guard alert.runModal() == .alertFirstButtonReturn else { return }
+
+        busyAppPackages.insert(app.packageName)
+        DispatchQueue.global(qos: .userInitiated).async { [weak self] in
+            let ok = ADB.uninstallApp(adb, serial: device.serial, packageName: app.packageName)
+            DispatchQueue.main.async {
+                guard let self else { return }
+                self.busyAppPackages.remove(app.packageName)
+                if ok {
+                    self.androidApps.removeAll { $0.packageName == app.packageName }
+                } else {
+                    self.presentAlert(
+                        L.s("apps.uninstallFailed"),
+                        L.f("apps.packageFormat", app.packageName))
+                }
             }
         }
     }
@@ -2296,6 +2821,7 @@ struct ContentView: View {
             onChooseFolder: { model.chooseMacFolder() },
             onSelect: { model.selectMac($0) },
             storage: model.macStorage,
+            macInfo: model.macInfo,
             hiddenFilesToggle: (isOn: model.showHiddenFiles,
                                 perform: { model.toggleHiddenFiles() }),
             paneID: "mac",
@@ -2347,11 +2873,13 @@ struct ContentView: View {
             onSelect: { model.selectAndroid($0) },
             storage: model.androidStorage,
             deviceInfo: model.androidInfo,
+            hiddenFilesToggle: (isOn: model.showHiddenFiles,
+                                perform: { model.toggleHiddenFiles() }),
             paneID: "android",
             showsSetupGuide: model.deviceStatus.needsSetupGuide,
             guideExpanded: $model.guideExpanded,
             onOpenSettings: { SettingsWindow.show(model: model) },
-            actions: [
+            actions: model.androidPaneMode == .files ? [
                 PaneAction(
                     title: L.s("action.download"), symbol: "arrow.down.doc",
                     isEnabled: !model.androidSelection.isEmpty && model.deviceStatus.isConnected,
@@ -2364,7 +2892,22 @@ struct ContentView: View {
                     title: L.s("action.delete"), symbol: "trash",
                     isEnabled: !model.androidSelection.isEmpty && model.deviceStatus.isConnected,
                     perform: { model.deleteAndroidSelection() })
-            ]
+            ] : [],
+            paneMode: (
+                current: model.androidPaneMode,
+                switchTo: { model.switchAndroidPaneMode($0) }),
+            appsSearch: $model.appsSearchText,
+            appsIsLoading: model.androidAppsLoading,
+            apps: model.androidApps,
+            busyApps: model.busyAppPackages,
+            onUninstallApp: { model.uninstallApp($0) },
+            onRefreshApps: { model.refreshAndroidApps() },
+            appSort: (field: model.appSortField, ascending: model.appSortAscending),
+            onSortApps: { model.toggleAppSort($0) },
+            userOnlyToggle: (
+                isOn: model.showUserAppsOnly,
+                perform: { model.showUserAppsOnly.toggle() }),
+            appsShowUserOnly: model.showUserAppsOnly
         )
     }
 }
@@ -2373,9 +2916,11 @@ struct ContentView: View {
 
 // MARK: - 图标按钮（常态淡底 / hover 加深 / 按下更深）
 
-/// CLT 工具链无 @State 宏，hover 状态放 ObservableObject
+/// CLT 工具链无 @State 宏，hover / 复制反馈等行内瞬时状态放 ObservableObject
 final class HoverState: ObservableObject {
     @Published var hovering = false
+    /// 包名复制成功后的短暂反馈（行内各自独立）
+    @Published var copied = false
 }
 
 struct IconButtonStyle: ButtonStyle {
@@ -2647,7 +3192,8 @@ struct StorageBarView: View {
     }
 }
 
-/// Android 设备概况：型号 · 系统 · 架构 · 电量（字段缺失自动省略）
+/// Android 设备概况：单行 chip，字段顺序与 Mac 栏一致
+/// （设备名 / 系统版本 / 内存 / 开机时间）
 struct DeviceInfoBarView: View {
     let info: AndroidDeviceInfo
 
@@ -2656,15 +3202,18 @@ struct DeviceInfoBarView: View {
             if let name = info.nameText {
                 chip("candybarphone", name)
             }
+            // 第二项：处理器型号，对应 Mac 的芯片
+            if let proc = info.processor {
+                chip("cpu", proc)
+            }
             if let sys = info.systemText {
                 chip("gearshape", sys)
             }
-            if let abi = info.abi {
-                chip("cpu", abi)
+            if let mem = info.memoryText {
+                chip("memorychip", mem)
             }
-            if let level = info.batteryLevel {
-                chip(batterySymbol(level, charging: info.batteryCharging ?? false),
-                     "\(level)%")
+            if let uptime = info.uptimeText {
+                chip("clock", uptime)
             }
             Spacer(minLength: 0)
         }
@@ -2680,16 +3229,44 @@ struct DeviceInfoBarView: View {
         }
         .fixedSize()
     }
+}
 
-    private func batterySymbol(_ level: Int, charging: Bool) -> String {
-        if charging { return "battery.100.bolt" }
-        switch level {
-        case ..<15: return "battery.0"
-        case ..<40: return "battery.25"
-        case ..<65: return "battery.50"
-        case ..<90: return "battery.75"
-        default: return "battery.100"
+/// Mac 主机概况：单行 chip，字段顺序与 Android 栏一致
+/// （芯片 / macOS 版本 / 内存 / 开机时间）
+struct MacInfoBarView: View {
+    let info: MacDeviceInfo
+
+    var body: some View {
+        HStack(spacing: 6) {
+            // 第一项：机器型号名（如 "Mac mini"），对应 Android 的手机型号
+            if let model = info.marketingModel {
+                chip("desktopcomputer", model)
+            }
+            if let cpu = info.cpuText {
+                chip("cpu", cpu)
+            }
+            if let os = info.osText {
+                chip("gearshape", os)
+            }
+            if let mem = info.memoryText {
+                chip("memorychip", mem)
+            }
+            if let uptime = info.uptimeText {
+                chip("clock", uptime)
+            }
+            Spacer(minLength: 0)
         }
+        .font(.caption2)
+        .foregroundStyle(.secondary)
+        .lineLimit(1)
+    }
+
+    private func chip(_ symbol: String, _ text: String) -> some View {
+        HStack(spacing: 3) {
+            Image(systemName: symbol)
+            Text(text)
+        }
+        .fixedSize()
     }
 }
 
@@ -2729,6 +3306,8 @@ struct FilePaneView: View {
     var storage: StorageInfo? = nil
     /// 设备概况（仅 Android 栏传入）
     var deviceInfo: AndroidDeviceInfo? = nil
+    /// Mac 主机概况（仅 Mac 栏传入，用于底部信息行对齐）
+    var macInfo: MacDeviceInfo? = nil
     /// 仅 Mac 栏提供：隐藏文件开关（nil 时不显示）
     var hiddenFilesToggle: (isOn: Bool, perform: () -> Void)? = nil
     /// 行点击监视器的 ID 前缀，避免两栏同名条目互相覆盖
@@ -2739,6 +3318,47 @@ struct FilePaneView: View {
     var guideExpanded: Binding<Bool>? = nil
     var onOpenSettings: (() -> Void)? = nil
     let actions: [PaneAction]
+    /// 仅 Android 栏提供：文件/应用视图切换（nil 时不显示切换器）
+    var paneMode: (current: AndroidPaneMode, switchTo: (AndroidPaneMode) -> Void)? = nil
+    /// 仅应用视图：搜索框文本（父视图持有）
+    var appsSearch: Binding<String> = .constant("")
+    /// 仅应用视图：应用列表加载中
+    var appsIsLoading: Bool = false
+    /// 仅应用视图：应用列表数据
+    var apps: [AndroidApp] = []
+    /// 仅应用视图：正在卸载/启动的包名集合（行内转圈）
+    var busyApps: Set<String> = []
+    /// 仅应用视图：卸载应用
+    var onUninstallApp: ((AndroidApp) -> Void)? = nil
+    /// 仅应用视图：刷新应用列表（nil 时回退到 onRefresh）
+    var onRefreshApps: (() -> Void)? = nil
+    /// 仅应用视图：当前排序字段与升降序（nil 时不排序，表头不可点）
+    var appSort: (field: AppSortField, ascending: Bool)? = nil
+    /// 仅应用视图：点击表头切换排序
+    var onSortApps: ((AppSortField) -> Void)? = nil
+    /// 仅应用视图：仅显示第三方应用开关（isOn + perform）
+    var userOnlyToggle: (isOn: Bool, perform: () -> Void)? = nil
+    /// 仅应用视图：仅第三方过滤开关状态（读取用）
+    var appsShowUserOnly: Bool = false
+
+    /// 应用视图表头可排序单元格：点击切换升降序，并显示当前排序箭头
+    private func sortableHeader(_ title: String, field: AppSortField,
+                                width: CGFloat) -> some View {
+        Button {
+            onSortApps?(field)
+        } label: {
+            HStack(spacing: 3) {
+                Text(title)
+                if let appSort, appSort.field == field {
+                    Image(systemName: appSort.ascending ? "arrow.up" : "arrow.down")
+                        .font(.system(size: 8, weight: .bold))
+                }
+            }
+        }
+        .buttonStyle(.plain)
+        .foregroundStyle(.secondary)
+        .frame(width: width, alignment: .leading)
+    }
 
     var body: some View {
         VStack(spacing: 0) {
@@ -2753,67 +3373,143 @@ struct FilePaneView: View {
                         .font(.caption)
                         .foregroundStyle(.secondary)
                 }
+                // 文件/应用视图切换（仅 Android 栏传入时显示）
+                if let paneMode {
+                    PaneSegmentedControl(
+                        current: paneMode.current,
+                        onChange: paneMode.switchTo)
+                }
             }
             .padding(.horizontal, 14)
             .padding(.vertical, 10)
+            // 标题行统一固定高度：左右两栏（Mac 无分段控件）行高一致，
+            // 保证下方表头与文件行水平对齐。
+            .frame(minHeight: 42)
 
-            HStack(spacing: 6) {
-                IconButton(symbol: "arrow.up", help: L.s("tooltip.goUp"),
-                           isDisabled: !canGoUp || isLoading, action: onGoUp)
+            // 应用视图：不显示面包屑/路径工具栏（无目录概念），只留刷新
+            if paneMode?.current != .apps {
+                HStack(spacing: 6) {
+                    IconButton(symbol: "arrow.up", help: L.s("tooltip.goUp"),
+                               isDisabled: !canGoUp || isLoading, action: onGoUp)
 
-                BreadcrumbView(path: path, rootLabel: rootLabel,
-                               rootSymbol: rootSymbol, rootTarget: rootTarget,
-                               onNavigate: onNavigate)
-                    .frame(maxWidth: .infinity, alignment: .leading)
-                if let onChooseFolder {
-                    IconButton(symbol: "folder.badge.gear", help: L.s("tooltip.chooseFolder"),
-                               action: onChooseFolder)
+                    // 快速返回根目录（Mac=用户目录 ~，Android=SD 卡 /sdcard）
+                    IconButton(symbol: rootSymbol,
+                               help: L.s("tooltip.goRoot"),
+                               isDisabled: path == rootTarget,
+                               action: { onNavigate(rootTarget) })
+
+                    BreadcrumbView(path: path, rootLabel: rootLabel,
+                                   rootSymbol: rootSymbol, rootTarget: rootTarget,
+                                   onNavigate: onNavigate)
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                    if let onChooseFolder {
+                        IconButton(symbol: "folder.badge.gear", help: L.s("tooltip.chooseFolder"),
+                                   action: onChooseFolder)
+                    }
+                    // 切换隐藏文件（两栏共用 showHiddenFiles 开关）
+                    if let toggle = hiddenFilesToggle {
+                        IconButton(symbol: toggle.isOn ? "eye" : "eye.slash",
+                                   help: toggle.isOn ? L.s("tooltip.hideHidden") : L.s("tooltip.showHidden"),
+                                   isActive: toggle.isOn,
+                                   action: toggle.perform)
+                    }
+                    IconButton(symbol: "arrow.clockwise", help: L.s("tooltip.refresh"),
+                               isDisabled: isLoading, action: onRefresh)
                 }
-                if let toggle = hiddenFilesToggle {
-                    IconButton(symbol: toggle.isOn ? "eye" : "eye.slash",
-                               help: toggle.isOn ? L.s("tooltip.hideHidden") : L.s("tooltip.showHidden"),
-                               isActive: toggle.isOn,
-                               action: toggle.perform)
+                .padding(.horizontal, 14)
+                .padding(.bottom, 8)
+            } else {
+                HStack(spacing: 6) {
+                    TextField(L.s("apps.searchPlaceholder"), text: appsSearch)
+                        .textFieldStyle(.roundedBorder)
+                        .controlSize(.small)
+                    // 仅显示第三方（User）安装的应用
+                    if let toggle = userOnlyToggle {
+                        Toggle(L.s("apps.userOnly"), isOn: Binding(
+                            get: { toggle.isOn },
+                            set: { _ in toggle.perform() }))
+                            .toggleStyle(.checkbox)
+                            .controlSize(.small)
+                            .help(L.s("apps.userOnlyHint"))
+                    }
+                    Spacer()
+                    IconButton(symbol: "arrow.clockwise", help: L.s("tooltip.refresh"),
+                               isDisabled: appsIsLoading,
+                               action: { onRefreshApps?() ?? onRefresh() })
                 }
-                IconButton(symbol: "arrow.clockwise", help: L.s("tooltip.refresh"),
-                           isDisabled: isLoading, action: onRefresh)
+                .padding(.horizontal, 14)
+                .padding(.bottom, 8)
             }
-            .padding(.horizontal, 14)
-            .padding(.bottom, 8)
 
-            // 表头与数据行共用列宽/间距/内边距，三列均左对齐；
-            // 首个等宽占位对应行内图标，使“名称”与文件名起始位置一致
-            HStack(spacing: FileListLayout.spacing) {
-                Color.clear
-                    .frame(width: FileListLayout.iconWidth, height: 1)
-                Text(L.s("column.name"))
-                    .frame(maxWidth: .infinity, alignment: .leading)
-                Text(L.s("column.size"))
-                    .frame(width: FileListLayout.sizeWidth, alignment: .leading)
-                Text(L.s("column.modified"))
-                    .frame(width: FileListLayout.dateWidth, alignment: .leading)
+            // 表头：文件视图显示名称/大小/修改时间；应用视图显示包名/类型
+            if paneMode?.current != .apps {
+                HStack(spacing: FileListLayout.spacing) {
+                    Color.clear
+                        .frame(width: FileListLayout.iconWidth, height: 1)
+                    Text(L.s("column.name"))
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                    Text(L.s("column.size"))
+                        .frame(width: FileListLayout.sizeWidth, alignment: .leading)
+                    Text(L.s("column.modified"))
+                        .frame(width: FileListLayout.dateWidth, alignment: .leading)
+                }
+                .font(.caption)
+                .foregroundStyle(.secondary)
+                .padding(.horizontal, FileListLayout.hInset)
+                .padding(.vertical, 6)
+                .background(.bar)
+            } else {
+                HStack(spacing: FileListLayout.spacing) {
+                    Color.clear
+                        .frame(width: FileListLayout.iconWidth, height: 1)
+                    Text(L.s("apps.packageName"))
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                    // Type / Size 表头可点击排序；点击同列翻转方向
+                    sortableHeader(L.s("apps.type"), field: .type,
+                                   width: 90)
+                    sortableHeader(L.s("column.size"), field: .size,
+                                   width: FileListLayout.sizeWidth)
+                    Text(L.s("apps.actions"))
+                        .frame(width: 90, alignment: .leading)
+                }
+                .font(.caption)
+                .foregroundStyle(.secondary)
+                .padding(.horizontal, FileListLayout.hInset)
+                .padding(.vertical, 6)
+                .background(.bar)
             }
-            .font(.caption)
-            .foregroundStyle(.secondary)
-            .padding(.horizontal, FileListLayout.hInset)
-            .padding(.vertical, 6)
-            .background(.bar)
 
             Divider()
 
-            content
+            if paneMode?.current == .apps {
+                appsContent
+            } else {
+                content
+            }
 
             Divider()
 
             // 存储容量 / 设备概况（取不到数据时整块不显示，不留空占位）
-            if storage != nil || deviceInfo != nil {
+            if storage != nil || deviceInfo != nil || macInfo != nil {
                 VStack(alignment: .leading, spacing: 5) {
-                    if let deviceInfo {
-                        DeviceInfoBarView(info: deviceInfo)
+                    // 设备概况固定槽位（两行）：Android 显示手机信息，Mac 显示主机信息，
+                    // 两栏都是「两行信息 + 存储条」，框顶与存储条落在同一水平线。
+                    Group {
+                        if let deviceInfo {
+                            DeviceInfoBarView(info: deviceInfo)
+                        } else if let macInfo {
+                            MacInfoBarView(info: macInfo)
+                        }
                     }
-                    if let storage {
-                        StorageBarView(storage: storage)
+                    .frame(height: 16)
+
+                    // 存储条固定槽位：两栏等高，进一步保证条体水平对齐。
+                    Group {
+                        if let storage {
+                            StorageBarView(storage: storage)
+                        }
                     }
+                    .frame(height: 24)
                 }
                 .padding(.horizontal, FileListLayout.hInset)
                 .padding(.top, 7)
@@ -2830,15 +3526,107 @@ struct FilePaneView: View {
                     .disabled(!action.isEnabled)
                 }
                 Spacer()
-                Text(selection.isEmpty
-                     ? L.f("count.itemsFormat", entries.count)
-                     : L.f("count.itemsSelectedFormat", entries.count, selection.count))
-                    .font(.caption)
-                    .foregroundStyle(.tertiary)
+                if paneMode?.current == .apps {
+                    Text(L.f("apps.countFormat", apps.count))
+                        .font(.caption)
+                        .foregroundStyle(.tertiary)
+                } else {
+                    Text(selection.isEmpty
+                         ? L.f("count.itemsFormat", entries.count)
+                         : L.f("count.itemsSelectedFormat", entries.count, selection.count))
+                        .font(.caption)
+                        .foregroundStyle(.tertiary)
+                }
             }
             .padding(12)
         }
         .frame(minWidth: 360, maxWidth: .infinity, maxHeight: .infinity)
+    }
+
+    /// 应用视图内容：搜索过滤后的应用列表
+    @ViewBuilder
+    private var appsContent: some View {
+        if appsIsLoading && apps.isEmpty {
+            VStack(spacing: 10) {
+                Spacer()
+                ProgressView()
+                    .controlSize(.small)
+                Text(L.s("status.loading"))
+                    .font(.callout)
+                    .foregroundStyle(.secondary)
+                Spacer()
+            }
+            .frame(maxWidth: .infinity, maxHeight: .infinity)
+        } else if apps.isEmpty {
+            VStack(spacing: 8) {
+                Spacer()
+                Image(systemName: "square.grid.2x2")
+                    .font(.system(size: 34))
+                    .foregroundStyle(.tertiary)
+                Text(deviceInfo != nil ? L.s("apps.empty") : L.s("device.disconnected"))
+                    .font(.callout)
+                    .foregroundStyle(.secondary)
+                Spacer()
+            }
+            .frame(maxWidth: .infinity, maxHeight: .infinity)
+            .padding(.horizontal, 16)
+        } else {
+            ScrollView {
+                LazyVStack(spacing: 0) {
+                    ForEach(filteredApps) { app in
+                        AppRowView(
+                            app: app,
+                            isBusy: busyApps.contains(app.packageName),
+                            onUninstall: { onUninstallApp?(app) })
+                            .padding(.horizontal, FileListLayout.hInset)
+                            .padding(.vertical, 2)
+                    }
+                }
+            }
+            .scrollContentBackground(.hidden)
+        }
+    }
+
+    /// 应用列表按搜索框文本过滤 + 按当前字段排序
+    private var filteredApps: [AndroidApp] {
+        let q = appsSearch.wrappedValue.trimmingCharacters(in: .whitespaces)
+        var result = q.isEmpty
+            ? apps
+            : apps.filter { $0.packageName.localizedCaseInsensitiveContains(q) }
+        // 仅显示第三方（User）安装的应用
+        if appsShowUserOnly {
+            result = result.filter { !$0.isSystem }
+        }
+        guard let appSort else { return result }
+        let ascending = appSort.ascending
+        switch appSort.field {
+        case .name:
+            return result.sorted {
+                ascending
+                    ? $0.packageName.localizedCaseInsensitiveCompare($1.packageName) == .orderedAscending
+                    : $0.packageName.localizedCaseInsensitiveCompare($1.packageName) == .orderedDescending
+            }
+        case .type:
+            // 系统应用排在前（升序时）；同组按包名稳定排序
+            return result.sorted {
+                if $0.isSystem != $1.isSystem {
+                    return ascending ? $0.isSystem && !$1.isSystem : !$0.isSystem && $1.isSystem
+                }
+                return $0.packageName.localizedCaseInsensitiveCompare($1.packageName) == .orderedAscending
+            }
+        case .size:
+            // 取不到体积的排末尾
+            return result.sorted {
+                switch ($0.sizeBytes, $1.sizeBytes) {
+                case let (a?, b?):
+                    return ascending ? a < b : a > b
+                case (_, nil):
+                    return true
+                case (nil, _):
+                    return false
+                }
+            }
+        }
     }
 
     @ViewBuilder
@@ -3021,6 +3809,191 @@ struct FileRowView: View {
 
 
 // MARK: - 传输面板
+
+// MARK: - 面板视图切换（扁平分段）
+
+/// 文件/应用 视图切换：扁平分段样式。
+/// 相邻两段的相接边不圆角（中间直角、外侧跟随整体圆角），段间无间隙，整体尺寸偏小。
+struct PaneSegmentedControl: View {
+    let current: AndroidPaneMode
+    let onChange: (AndroidPaneMode) -> Void
+
+    /// 整体高度（比系统 segmented 更小）
+    private let height: CGFloat = 22
+    /// 外框整体圆角
+    private let outerRadius: CGFloat = 6
+
+    var body: some View {
+        HStack(spacing: 0) {
+            segment(.files, title: L.s("pane.filesTab"), symbol: "folder",
+                    isFirst: true)
+            segment(.apps, title: L.s("pane.appsTab"), symbol: "square.grid.2x2",
+                    isFirst: false)
+        }
+        .background(
+            RoundedRectangle(cornerRadius: outerRadius)
+                .fill(Color.primary.opacity(0.05)))
+        .overlay(
+            RoundedRectangle(cornerRadius: outerRadius)
+                .strokeBorder(Color.primary.opacity(0.10), lineWidth: 1))
+    }
+
+    @ViewBuilder
+    private func segment(_ mode: AndroidPaneMode, title: String,
+                         symbol: String, isFirst: Bool) -> some View {
+        let isSelected = current == mode
+        // 相接边保持直角（半径 0），只有最外侧的两个角跟随整体圆角；
+        // 这样两段之间没有间隙、也没有内凹圆角，呈现扁平分段。
+        let shape = UnevenRoundedRectangle(
+            topLeadingRadius: isFirst ? outerRadius : 0,
+            bottomLeadingRadius: isFirst ? outerRadius : 0,
+            bottomTrailingRadius: isFirst ? 0 : outerRadius,
+            topTrailingRadius: isFirst ? 0 : outerRadius)
+        Button {
+            if !isSelected { onChange(mode) }
+        } label: {
+            HStack(spacing: 4) {
+                Image(systemName: symbol)
+                    .font(.system(size: 10))
+                Text(title)
+                    .font(.caption)
+            }
+            .frame(height: height)
+            .frame(minWidth: 64)
+            .background(
+                shape.fill(isSelected ? Color.primary.opacity(0.14) : Color.clear))
+        }
+        .buttonStyle(.plain)
+        .foregroundStyle(isSelected ? Color.primary : Color.secondary)
+        .contentShape(shape)
+    }
+}
+
+// MARK: - Android 应用图标（用户提供的 SVG）
+
+/// 从 app bundle 加载 android-app.svg 并缓存。NSImage 原生支持 SVG。
+/// 失败时回退到 SF Symbol "app"，保证 UI 不缺图标。
+enum AndroidAppIcon {
+    static let fallbackSymbol = "app"
+
+    static func image() -> NSImage {
+        if let cached = cached { return cached }
+        let img = Bundle.main
+            .url(forResource: "android-app", withExtension: "svg")
+            .flatMap { NSImage(contentsOf: $0) }
+        let resolved = img ?? NSImage(systemSymbolName: fallbackSymbol, accessibilityDescription: nil) ?? NSImage()
+        cached = resolved
+        return resolved
+    }
+
+    private static var cached: NSImage?
+}
+
+/// 应用列表单行：图标徽章 + 包名（可复制）+ 系统/第三方标识 + 体积 + 卸载按钮
+struct AppRowView: View {
+    let app: AndroidApp
+    let isBusy: Bool
+    let onUninstall: () -> Void
+    @ObservedObject private var hover = HoverState()
+
+    /// 图标：系统应用用 SF Symbol 盾牌，第三方用用户提供的 Android 机器人 SVG
+    private var iconColor: Color { app.isSystem ? .secondary : .accentColor }
+
+    @ViewBuilder
+    private var iconBadge: some View {
+        if app.isSystem {
+            // 系统应用：SF Symbol 盾牌（灰色徽章）
+            ZStack {
+                RoundedRectangle(cornerRadius: 5)
+                    .fill(Color.secondary.opacity(0.10))
+                Image(systemName: "shield")
+                    .font(.system(size: 11, weight: .medium))
+                    .foregroundStyle(.secondary)
+            }
+            .frame(width: 22, height: 22)
+        } else {
+            // 第三方应用：Android 机器人 SVG（强调色徽章，图形染色为强调色）
+            ZStack {
+                RoundedRectangle(cornerRadius: 5)
+                    .fill(Color.accentColor.opacity(0.16))
+                Image(nsImage: AndroidAppIcon.image())
+                    .resizable()
+                    .renderingMode(.template)
+                    .aspectRatio(contentMode: .fit)
+                    .foregroundStyle(Color.accentColor)
+                    .frame(width: 15, height: 15)
+            }
+            .frame(width: 22, height: 22)
+        }
+    }
+
+    var body: some View {
+        HStack(spacing: FileListLayout.spacing) {
+            iconBadge
+
+            Text(app.packageName)
+                .font(.caption)
+                .lineLimit(1)
+                .truncationMode(.middle)
+                .help(app.packageName)
+            // 复制包名：hover 时显示复制图标，点击后短暂显示对勾反馈
+            Button {
+                NSPasteboard.general.clearContents()
+                NSPasteboard.general.setString(app.packageName, forType: .string)
+                hover.copied = true
+                // 1.2s 后恢复复制图标
+                DispatchQueue.main.asyncAfter(deadline: .now() + 1.2) {
+                    hover.copied = false
+                }
+            } label: {
+                if hover.copied {
+                    Image(systemName: "checkmark")
+                        .font(.system(size: 9, weight: .semibold))
+                        .foregroundStyle(Color.green)
+                        .transition(.opacity)
+                } else {
+                    Image(systemName: hover.hovering ? "doc.on.doc.fill" : "doc.on.doc")
+                        .font(.system(size: 8.5))
+                        .foregroundStyle(hover.hovering ? Color.secondary : Color.primary.opacity(0.2))
+                }
+            }
+            .buttonStyle(.plain)
+            .focusable(false)
+            .help(L.s("apps.copyPackage"))
+
+            Spacer(minLength: 8)
+
+            Text(app.isSystem ? L.s("apps.typeSystem") : L.s("apps.typeUser"))
+                .font(.caption)
+                .foregroundStyle(app.isSystem ? .tertiary : .secondary)
+                .frame(width: 90, alignment: .leading)
+            Text(app.sizeBytes.map(storageSizeText) ?? "—")
+                .font(.caption)
+                .foregroundStyle(.secondary)
+                .frame(width: FileListLayout.sizeWidth, alignment: .leading)
+            HStack(spacing: 6) {
+                Button {
+                    onUninstall()
+                } label: {
+                    Label(L.s("apps.uninstall"), systemImage: "trash")
+                }
+                .buttonStyle(.bordered)
+                .controlSize(.mini)
+                .disabled(isBusy || app.isSystem)
+                .help(app.isSystem ? L.s("apps.systemNoUninstall") : "")
+            }
+            .frame(width: 90, alignment: .leading)
+
+            if isBusy {
+                ProgressView()
+                    .controlSize(.mini)
+            }
+        }
+        .padding(.vertical, 4)
+        .contentShape(Rectangle())
+        .onHover { hover.hovering = $0 }
+    }
+}
 
 struct TransferPanelView: View {
     @ObservedObject var transfers: TransferManager

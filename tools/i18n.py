@@ -152,6 +152,26 @@ KEY_MAP = {
     "关于 MacDroid": ("menu.about", "About MacDroid"),
     "借助本机 adb 管理 Android 设备文件。": ("about.detail", "Manage Android files using your local adb."),
     "版本 %@": ("about.versionFormat", "Version %@"),
+    # 应用管理（最小可用版）
+    "文件": ("pane.filesTab", "Files"),
+    "应用程序": ("pane.appsTab", "Apps"),
+    "包名": ("apps.packageName", "Package"),
+    "类型": ("apps.type", "Type"),
+    "操作": ("apps.actions", "Actions"),
+    "搜索应用包名…": ("apps.searchPlaceholder", "Search package…"),
+    "系统": ("apps.typeSystem", "System"),
+    "第三方": ("apps.typeUser", "User"),
+    "卸载": ("apps.uninstall", "Uninstall"),
+    "系统应用不可卸载": ("apps.systemNoUninstall", "System apps cannot be uninstalled"),
+    "无法卸载应用": ("apps.uninstallFailed", "Cannot Uninstall App"),
+    "包名：%@": ("apps.packageFormat", "Package: %@"),
+    "卸载应用？": ("apps.uninstallTitle", "Uninstall App?"),
+    "确定卸载 %@？此操作不可撤销。": ("apps.uninstallConfirmFormat", "Uninstall %@? This cannot be undone."),
+    "应用 %lld 个": ("apps.countFormat", "%lld apps"),
+    "暂无应用": ("apps.empty", "No Apps"),
+    "复制包名": ("apps.copyPackage", "Copy package name"),
+    "仅第三方": ("apps.userOnly", "User apps only"),
+    "只显示第三方（用户）安装的应用": ("apps.userOnlyHint", "Show only user-installed apps"),
 }
 
 

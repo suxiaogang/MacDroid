@@ -111,6 +111,7 @@
 "status.ready" = "Bereit";
 "tooltip.chooseFolder" = "Ordner auswählen …";
 "tooltip.goUp" = "Übergeordneter Ordner";
+"tooltip.goRoot" = "Startverzeichnis";
 "tooltip.hideHidden" = "Verborgene Objekte ausblenden (⌘⇧.)";
 "tooltip.open" = "Doppelklick zum Öffnen";
 "tooltip.refresh" = "Aktualisieren";
@@ -125,3 +126,23 @@
 "breadcrumb.more" = "Weitere Ebenen";
 "storage.usedFormat" = "%@ von %@ belegt";
 "storage.freeFormat" = "%@ frei";
+
+"pane.filesTab" = "Dateien";
+"pane.appsTab" = "Apps";
+"apps.packageName" = "Paket";
+"apps.type" = "Typ";
+"apps.actions" = "Aktionen";
+"apps.searchPlaceholder" = "Paket suchen…";
+"apps.typeSystem" = "System";
+"apps.typeUser" = "Drittanbieter";
+"apps.uninstall" = "Deinstallieren";
+"apps.systemNoUninstall" = "System-Apps können nicht deinstalliert werden";
+"apps.uninstallFailed" = "App kann nicht deinstalliert werden";
+"apps.packageFormat" = "Paket: %@";
+"apps.uninstallTitle" = "App deinstallieren?";
+"apps.uninstallConfirmFormat" = "%@ wirklich deinstallieren? Dies kann nicht rückgängig gemacht werden.";
+"apps.countFormat" = "%lld Apps";
+"apps.empty" = "Keine Apps";
+"apps.copyPackage" = "Paketnamen kopieren";
+"apps.userOnly" = "Nur Drittanbieter";
+"apps.userOnlyHint" = "Nur vom Benutzer installierte Apps anzeigen";

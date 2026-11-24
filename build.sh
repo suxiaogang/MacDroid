@@ -43,6 +43,8 @@ if [ ! -f icon.icns ]; then
   exit 1
 fi
 cp icon.icns "$APP_NAME/Contents/Resources/AppIcon.icns"
+# Android 应用图标（用户提供的 SVG，NSImage 原生支持）
+cp Resources/android-app.svg "$APP_NAME/Contents/Resources/"
 
 echo "==> 打包本地化资源..."
 # 仅依赖 CLT：直接复制 .lproj 目录（无需 actool/genstrings）

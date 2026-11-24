@@ -111,6 +111,7 @@
 "status.ready" = "준비 완료";
 "tooltip.chooseFolder" = "폴더 선택…";
 "tooltip.goUp" = "상위 폴더";
+"tooltip.goRoot" = "홈";
 "tooltip.hideHidden" = "숨김 항목 숨기기(⌘⇧.)";
 "tooltip.open" = "더블 클릭으로 열기";
 "tooltip.refresh" = "새로 고침";
@@ -125,3 +126,23 @@
 "breadcrumb.more" = "추가 경로";
 "storage.usedFormat" = "사용 %@ / %@";
 "storage.freeFormat" = "여유 %@";
+
+"pane.filesTab" = "파일";
+"pane.appsTab" = "앱";
+"apps.packageName" = "패키지";
+"apps.type" = "유형";
+"apps.actions" = "동작";
+"apps.searchPlaceholder" = "패키지 검색…";
+"apps.typeSystem" = "시스템";
+"apps.typeUser" = "서드파티";
+"apps.uninstall" = "제거";
+"apps.systemNoUninstall" = "시스템 앱은 제거할 수 없습니다";
+"apps.uninstallFailed" = "앱을 제거할 수 없습니다";
+"apps.packageFormat" = "패키지: %@";
+"apps.uninstallTitle" = "앱을 제거하시겠습니까?";
+"apps.uninstallConfirmFormat" = "%@ 을(를) 제거하시겠습니까? 이 작업은 되돌릴 수 없습니다.";
+"apps.countFormat" = "앱 %lld개";
+"apps.empty" = "앱 없음";
+"apps.copyPackage" = "패키지 이름 복사";
+"apps.userOnly" = "서드파티만";
+"apps.userOnlyHint" = "사용자가 설치한 앱만 표시";

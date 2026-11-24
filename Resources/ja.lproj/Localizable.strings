@@ -111,6 +111,7 @@
 "status.ready" = "準備完了";
 "tooltip.chooseFolder" = "フォルダを選択…";
 "tooltip.goUp" = "親フォルダ";
+"tooltip.goRoot" = "ホーム";
 "tooltip.hideHidden" = "隠し項目を隠す（⌘⇧.）";
 "tooltip.open" = "ダブルクリックで開く";
 "tooltip.refresh" = "更新";
@@ -125,3 +126,23 @@
 "breadcrumb.more" = "その他の階層";
 "storage.usedFormat" = "使用済み %@ / %@";
 "storage.freeFormat" = "空き %@";
+
+"pane.filesTab" = "ファイル";
+"pane.appsTab" = "アプリ";
+"apps.packageName" = "パッケージ";
+"apps.type" = "種類";
+"apps.actions" = "操作";
+"apps.searchPlaceholder" = "パッケージを検索…";
+"apps.typeSystem" = "システム";
+"apps.typeUser" = "サードパーティ";
+"apps.uninstall" = "アンインストール";
+"apps.systemNoUninstall" = "システムアプリはアンインストールできません";
+"apps.uninstallFailed" = "アプリをアンインストールできません";
+"apps.packageFormat" = "パッケージ：%@";
+"apps.uninstallTitle" = "アプリをアンインストールしますか？";
+"apps.uninstallConfirmFormat" = "%@ をアンインストールしますか？この操作は元に戻せません。";
+"apps.countFormat" = "アプリ %lld 個";
+"apps.empty" = "アプリなし";
+"apps.copyPackage" = "パッケージ名をコピー";
+"apps.userOnly" = "サードパーティのみ";
+"apps.userOnlyHint" = "ユーザーがインストールしたアプリのみ表示";

@@ -111,6 +111,7 @@
 "status.ready" = "Prêt";
 "tooltip.chooseFolder" = "Choisir un dossier…";
 "tooltip.goUp" = "Dossier parent";
+"tooltip.goRoot" = "Répertoire principal";
 "tooltip.hideHidden" = "Masquer les éléments masqués (⌘⇧.)";
 "tooltip.open" = "Double-clic pour ouvrir";
 "tooltip.refresh" = "Actualiser";
@@ -125,3 +126,23 @@
 "breadcrumb.more" = "Autres niveaux";
 "storage.usedFormat" = "%@ sur %@ utilisés";
 "storage.freeFormat" = "%@ libres";
+
+"pane.filesTab" = "Fichiers";
+"pane.appsTab" = "Applis";
+"apps.packageName" = "Paquet";
+"apps.type" = "Type";
+"apps.actions" = "Actions";
+"apps.searchPlaceholder" = "Rechercher un paquet…";
+"apps.typeSystem" = "Système";
+"apps.typeUser" = "Utilisateur";
+"apps.uninstall" = "Désinstaller";
+"apps.systemNoUninstall" = "Les applications système ne peuvent pas être désinstallées";
+"apps.uninstallFailed" = "Impossible de désinstaller l'application";
+"apps.packageFormat" = "Paquet : %@";
+"apps.uninstallTitle" = "Désinstaller l'application ?";
+"apps.uninstallConfirmFormat" = "Désinstaller %@ ? Cette action est irréversible.";
+"apps.countFormat" = "%lld applis";
+"apps.empty" = "Aucune application";
+"apps.copyPackage" = "Copier le nom du paquet";
+"apps.userOnly" = "Applications utilisateur";
+"apps.userOnlyHint" = "Afficher uniquement les applications installées par l'utilisateur";
