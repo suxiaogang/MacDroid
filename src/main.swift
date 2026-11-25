@@ -1054,7 +1054,8 @@ enum ADB {
 
         return collected.map {
             AndroidApp(packageName: $0.pkg, isSystem: $0.isSystem,
-                       sizeBytes: sizeByApk[$0.apk])
+                       sizeBytes: sizeByApk[$0.apk],
+                       apkPath: $0.apk)
         }.sorted { $0.packageName.localizedCaseInsensitiveCompare($1.packageName) == .orderedAscending }
     }
 
@@ -1103,6 +1104,103 @@ enum ADB {
         guard let r else { return false }
         // adb uninstall 成功时 stdout 为 "Success"
         return r.exitCode == 0 && r.stdout.lowercased().contains("success")
+    }
+
+    /// 解析 `dumpsys package <pkg>` 输出，提取版本、SDK、权限信息。
+    /// Android 7 输出格式（实测 391QYECD2229J）：
+    ///   versionCode=36 minSdk=36 targetSdk=36
+    ///   versionName=16
+    ///   android.permission.XXX
+    /// 字段缺失时留 nil，调用方展示「—」。
+    /// label 通过本机 aapt（如果安装了 Android SDK build-tools）提取应用名，
+    /// aapt 不存在或失败时留 nil，调用方回退到包名。
+    static func apkDetails(adb: String, serial: String,
+                            package: String) -> ApkDetails? {
+        let r = try? runProcess(adb, ["-s", serial, "shell",
+                                       "dumpsys", "package", package])
+        guard let r, r.exitCode == 0, !r.stdout.isEmpty else { return nil }
+        var d = ApkDetails()
+        for line in r.stdout.split(separator: "\n") {
+            let t = line.trimmingCharacters(in: .whitespaces)
+            // 同行 versionCode/minSdk/targetSdk 键值对
+            if t.contains("versionCode=") {
+                for pair in t.split(separator: " ") {
+                    let kv = pair.split(separator: "=", maxSplits: 1)
+                    guard kv.count == 2 else { continue }
+                    let key = String(kv[0]); let val = String(kv[1])
+                    switch key {
+                    case "versionCode": d.versionCode = Int(val)
+                    case "minSdk":      d.minSdk      = Int(val)
+                    case "targetSdk":   d.targetSdk   = Int(val)
+                    default: break
+                    }
+                }
+            }
+            // versionName（可能独立一行）
+            if t.hasPrefix("versionName=") {
+                d.versionName = String(t.dropFirst("versionName=".count))
+                    .trimmingCharacters(in: .whitespaces)
+            }
+            // 权限行：形如 "android.permission.INTERNET"
+            if t.hasPrefix("android.permission.") {
+                d.permissions.append(t)
+            }
+        }
+        // 可选：应用名（label）需要 pull APK + aapt，会拖慢响应。
+        // 这里不提取，标题回退到包名，响应 < 200ms。
+        return d
+    }
+
+    /// 从 APK 提取应用名（label）。先 adb pull 到临时目录，再调本机 aapt dump badging。
+    /// aapt 不存在（无 Android SDK）或解析失败时返回 nil，调用方回退到包名。
+    static func extractApkLabel(adb: String, serial: String,
+                                 package: String) -> String? {
+        // 1) 本机有无 aapt（可选依赖）
+        guard let aaptPath = findLocalAapt() else { return nil }
+        // 2) 从设备获取 APK 路径
+        guard let pathR = try? runProcess(adb, ["-s", serial, "shell", "pm", "path", package]),
+              pathR.exitCode == 0 else { return nil }
+        let apkPath = pathR.stdout
+            .split(separator: "\n")
+            .first.map { $0.trimmingCharacters(in: .whitespacesAndNewlines)
+                            .replacingOccurrences(of: "package:", with: "") }
+        guard let apkPath, !apkPath.isEmpty else { return nil }
+        // 3) 下载到临时目录
+        let tmpDir = FileManager.default.temporaryDirectory
+            .appendingPathComponent("macdroid-detail-\(UUID().uuidString)")
+        let localApk = tmpDir.appendingPathComponent("app.apk")
+        try? FileManager.default.createDirectory(at: tmpDir, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: tmpDir) }
+        let pull = try? runProcess(adb, ["-s", serial, "pull", apkPath, localApk.path])
+        guard let pull, pull.exitCode == 0, FileManager.default.fileExists(atPath: localApk.path) else { return nil }
+        // 4) aapt dump badging 提取默认 label
+        let badging = try? runProcess(aaptPath, ["dump", "badging", localApk.path])
+        guard let badging, badging.exitCode == 0 else { return nil }
+        for line in badging.stdout.split(separator: "\n") {
+            let t = line.trimmingCharacters(in: .whitespaces)
+            if t.hasPrefix("application-label:") {
+                let label = t.dropFirst("application-label:".count)
+                    .trimmingCharacters(in: CharacterSet(charactersIn: " '"))
+                return label.isEmpty ? nil : label
+            }
+        }
+        return nil
+    }
+
+    /// 查找本机 aapt（仅用于提取应用名，可选依赖）。常见路径：
+    /// ~/Library/Android/sdk/build-tools/*/aapt
+    /// aapt2 不适合 dump badging，优先 aapt。
+    private static func findLocalAapt() -> String? {
+        let home = FileManager.default.homeDirectoryForCurrentUser
+        let sdkRoot = home.appendingPathComponent("Library/Android/sdk/build-tools")
+        guard let versions = try? FileManager.default.contentsOfDirectory(
+            at: sdkRoot, includingPropertiesForKeys: nil) else { return nil }
+        // 取版本号最大的 aapt（字符串排序在主版本相同时仍可靠，跨大版本可能错，但这里只是可选增强）
+        let candidates = versions
+            .map { $0.appendingPathComponent("aapt") }
+            .filter { FileManager.default.isExecutableFile(atPath: $0.path) }
+            .sorted { $0.path > $1.path }
+        return candidates.first?.path
     }
 
     /// 解析 toybox/busybox `ls -la` 输出
@@ -1381,13 +1479,25 @@ final class ProgressFlag: @unchecked Sendable {
 
 // MARK: - Android 应用管理
 
-/// 设备上已安装应用的最小信息（包名 + 是否系统应用 + apk 体积）
+/// 设备上已安装应用的最小信息（包名 + 是否系统应用 + apk 体积 + apk 路径）
 struct AndroidApp: Identifiable {
     let packageName: String
     let isSystem: Bool
     /// apk 体积（取不到时为 nil，UI 显示「—」）
     var sizeBytes: Int64?
+    /// 设备上的 apk 路径（导出 APK 时用，取不到时为 nil）
+    var apkPath: String?
     var id: String { packageName }
+}
+
+/// APK 详情（dumpsys package 解析结果）
+struct ApkDetails {
+    var label: String?       // 应用名（从 aapt dump badging 提取，取不到时 nil）
+    var versionName: String?
+    var versionCode: Int?
+    var minSdk: Int?
+    var targetSdk: Int?
+    var permissions: [String] = []
 }
 
 /// Android 面板的视图模式：文件浏览 / 应用管理
@@ -2448,6 +2558,113 @@ final class AppModel: ObservableObject {
             }
         }
     }
+
+    /// 显示 APK 详情：运行 `dumpsys package <pkg>` 解析版本/SDK/权限后弹窗展示。
+    /// 需要 androidSelection 中恰好选中一个应用。
+    func showAppDetails() {
+        guard let adb = ADB.findExecutable(),
+              let device = try? ADB.resolveDevice(adb) else {
+            presentAlert(L.s("error.deviceUnavailable"), L.s("error.refreshRetry"))
+            return
+        }
+        let selected = androidApps.filter { androidSelection.contains($0.packageName) }
+        guard selected.count == 1, let app = selected.first else { return }
+
+        busyAppPackages.insert(app.packageName)
+        DispatchQueue.global(qos: .userInitiated).async { [weak self] in
+            let details = ADB.apkDetails(adb: adb, serial: device.serial,
+                                         package: app.packageName)
+            DispatchQueue.main.async {
+                self?.busyAppPackages.remove(app.packageName)
+                self?.presentAppDetails(app: app, details: details)
+            }
+        }
+    }
+
+    /// 复制所选应用包名到底剪贴板（底部工具栏「复制包名」按钮）。
+    /// 需要恰好选中一个应用。
+    func copySelectedAppPackageName() {
+        let selected = androidApps.filter { androidSelection.contains($0.packageName) }
+        guard selected.count == 1, let app = selected.first, !app.packageName.isEmpty else {
+            return
+        }
+        NSPasteboard.general.clearContents()
+        NSPasteboard.general.setString(app.packageName, forType: .string)
+    }
+
+    /// 底部「复制包名」按钮是否可用：需要恰好选中一个应用。
+    var canCopySelectedAppPackage: Bool {
+        androidSelection.count == 1 &&
+        androidApps.contains { androidSelection.contains($0.packageName) }
+    }
+
+    /// 展示 APK 详情弹窗。标题优先用应用名，缺失时回退包名。
+    private func presentAppDetails(app: AndroidApp, details: ApkDetails?) {
+        let alert = NSAlert()
+        alert.alertStyle = .informational
+        // 弹窗图标：设备上真实应用图标需 pull APK 才能取，代价过高；
+        // 这里统一用项目自带的 android-app.svg（与列表第三方图标一致）。
+        alert.icon = AndroidAppIcon.image()
+        // 标题：应用名 > 包名 > 本地化兜底
+        let title = details?.label
+            ?? (app.packageName.isEmpty ? L.s("apps.details.title") : app.packageName)
+        alert.messageText = title
+        var lines: [String] = []
+        lines.append("\(L.s("apps.details.package")): \(app.packageName)")
+        if let d = details {
+            lines.append("\(L.s("apps.details.version")): \(d.versionName ?? "—") (code \(d.versionCode.map(String.init) ?? "—"))")
+            lines.append("\(L.s("apps.details.minSdk")): \(d.minSdk.map(String.init) ?? "—")")
+            lines.append("\(L.s("apps.details.targetSdk")): \(d.targetSdk.map(String.init) ?? "—")")
+            if !d.permissions.isEmpty {
+                lines.append("\(L.s("apps.details.permissions")) (\(d.permissions.count)):")
+                for perm in d.permissions.prefix(20) {
+                    lines.append("  • \(perm)")
+                }
+                if d.permissions.count > 20 {
+                    lines.append("  … +\(d.permissions.count - 20)")
+                }
+            }
+        } else {
+            lines.append(L.s("apps.details.notAvailable"))
+        }
+        alert.informativeText = lines.joined(separator: "\n")
+        alert.addButton(withTitle: L.s("action.ok"))
+        NSApp.activate(ignoringOtherApps: true)
+        alert.runModal()
+    }
+
+    /// 导出 APK：弹出保存面板选目标位置，然后走统一的 adb pull 传输队列（带进度）。
+    /// 系统应用同样可导出；apk 路径取不到时提示。
+    func exportAppApk(_ app: AndroidApp) {
+        guard deviceStatus.isConnected else {
+            presentAlert(L.s("device.disconnected"), L.s("error.connectDevice"))
+            return
+        }
+        guard let apkPath = app.apkPath, !apkPath.isEmpty else {
+            presentAlert(L.s("apps.exportFailed"),
+                         L.f("apps.exportNoPathFormat", app.packageName))
+            return
+        }
+        guard let adb = ADB.findExecutable(),
+              let device = try? ADB.resolveDevice(adb) else {
+            presentAlert(L.s("error.deviceUnavailable"), L.s("error.refreshRetry"))
+            return
+        }
+        // 文件名：<包名>.apk
+        let fileName = "\(app.packageName).apk"
+        let panel = NSSavePanel()
+        panel.nameFieldStringValue = fileName
+        panel.allowedContentTypes = []
+        NSApp.activate(ignoringOtherApps: true)
+        guard panel.runModal() == .OK, let destDir = panel.directoryURL?.path else { return }
+
+        let item = TransferItem(
+            direction: .download, name: fileName,
+            sourcePath: apkPath, destPath: destDir,
+            adb: adb, serial: device.serial,
+            totalBytes: app.sizeBytes ?? 0, isDirectory: false)
+        transfers.enqueue([item])
+    }
 }
 
 // MARK: - 设置：adb 路径
@@ -2892,7 +3109,19 @@ struct ContentView: View {
                     title: L.s("action.delete"), symbol: "trash",
                     isEnabled: !model.androidSelection.isEmpty && model.deviceStatus.isConnected,
                     perform: { model.deleteAndroidSelection() })
-            ] : [],
+            ] : [
+                // 应用视图也保留一条动作按钮：显示所选应用的 APK 详情，
+                // 使底部操作行与 Mac 侧（文件视图 3 按钮）高度一致。
+                PaneAction(
+                    title: L.s("apps.details"), symbol: "info.circle",
+                    isEnabled: model.deviceStatus.isConnected
+                        && model.androidSelection.count == 1,
+                    perform: { model.showAppDetails() }),
+                PaneAction(
+                    title: L.s("apps.copyPackage"), symbol: "doc.on.doc",
+                    isEnabled: model.canCopySelectedAppPackage,
+                    perform: { model.copySelectedAppPackageName() })
+            ],
             paneMode: (
                 current: model.androidPaneMode,
                 switchTo: { model.switchAndroidPaneMode($0) }),
@@ -2901,6 +3130,7 @@ struct ContentView: View {
             apps: model.androidApps,
             busyApps: model.busyAppPackages,
             onUninstallApp: { model.uninstallApp($0) },
+            onExportApp: { model.exportAppApk($0) },
             onRefreshApps: { model.refreshAndroidApps() },
             appSort: (field: model.appSortField, ascending: model.appSortAscending),
             onSortApps: { model.toggleAppSort($0) },
@@ -3330,6 +3560,8 @@ struct FilePaneView: View {
     var busyApps: Set<String> = []
     /// 仅应用视图：卸载应用
     var onUninstallApp: ((AndroidApp) -> Void)? = nil
+    /// 仅应用视图：导出 APK
+    var onExportApp: ((AndroidApp) -> Void)? = nil
     /// 仅应用视图：刷新应用列表（nil 时回退到 onRefresh）
     var onRefreshApps: (() -> Void)? = nil
     /// 仅应用视图：当前排序字段与升降序（nil 时不排序，表头不可点）
@@ -3418,6 +3650,10 @@ struct FilePaneView: View {
                 }
                 .padding(.horizontal, 14)
                 .padding(.bottom, 8)
+                // 两个工具栏分支锁同一固定高度：文件视图（IconButton 20pt）与
+                // 应用视图（搜索框 22pt）自然高度差 2pt，若不锁定会让下方表头
+                // /列表起点错开 2px。锁定后表头行严格同一 Y 坐标。
+                .frame(height: Self.toolbarHeight, alignment: .bottom)
             } else {
                 HStack(spacing: 6) {
                     TextField(L.s("apps.searchPlaceholder"), text: appsSearch)
@@ -3439,6 +3675,7 @@ struct FilePaneView: View {
                 }
                 .padding(.horizontal, 14)
                 .padding(.bottom, 8)
+                .frame(height: Self.toolbarHeight, alignment: .bottom)
             }
 
             // 表头：文件视图显示名称/大小/修改时间；应用视图显示包名/类型
@@ -3470,7 +3707,7 @@ struct FilePaneView: View {
                     sortableHeader(L.s("column.size"), field: .size,
                                    width: FileListLayout.sizeWidth)
                     Text(L.s("apps.actions"))
-                        .frame(width: 90, alignment: .leading)
+                        .frame(width: 150, alignment: .leading)
                 }
                 .font(.caption)
                 .foregroundStyle(.secondary)
@@ -3481,19 +3718,32 @@ struct FilePaneView: View {
 
             Divider()
 
-            if paneMode?.current == .apps {
-                appsContent
-            } else {
-                content
+            // 中间列表区：底部留出固定 footerHeight 空间给贴底页脚。
+            Group {
+                if paneMode?.current == .apps {
+                    appsContent
+                } else {
+                    content
+                }
             }
+            .frame(maxWidth: .infinity, maxHeight: .infinity)
+            .padding(.bottom, Self.footerHeight)
+        }
+        .frame(minWidth: 360, maxWidth: .infinity, maxHeight: .infinity)
+        // 底部贴底页脚（等价绝对定位）：存储条 Y = pane 底边 − 固定偏移，
+        // 与上方工具栏/列表高度、是否撑满、按钮是否换行完全解耦。
+        // 两栏 pane 等高，故设备信息行/存储条/操作行必然严格落在同一 Y 坐标。
+        .overlay(alignment: .bottom) {
+            // 底部固定高度页脚：整体贴底、高度恒定。关键——容器 .top 对齐，
+            // 且每一行都固定高度，使所有元素位置只由「页脚顶边 + 固定偏移」决定，
+            // 与按钮数量/是否换行/信息行是否填充完全无关。两栏 pane 等高，页脚等高，
+            // 因此设备信息行 / 存储条 / 操作行必然严格落在同一 Y 坐标。
+            VStack(spacing: 0) {
+                Rectangle().fill(Color(nsColor: .separatorColor))
+                    .frame(height: 1)
 
-            Divider()
-
-            // 存储容量 / 设备概况（取不到数据时整块不显示，不留空占位）
-            if storage != nil || deviceInfo != nil || macInfo != nil {
+                // 信息块：上 padding(7) + 信息槽(16) + 间距(5) + 存储槽(24) + 下 padding(2)
                 VStack(alignment: .leading, spacing: 5) {
-                    // 设备概况固定槽位（两行）：Android 显示手机信息，Mac 显示主机信息，
-                    // 两栏都是「两行信息 + 存储条」，框顶与存储条落在同一水平线。
                     Group {
                         if let deviceInfo {
                             DeviceInfoBarView(info: deviceInfo)
@@ -3501,47 +3751,61 @@ struct FilePaneView: View {
                             MacInfoBarView(info: macInfo)
                         }
                     }
-                    .frame(height: 16)
+                    .frame(height: 16, alignment: .top)
 
-                    // 存储条固定槽位：两栏等高，进一步保证条体水平对齐。
                     Group {
                         if let storage {
                             StorageBarView(storage: storage)
                         }
                     }
-                    .frame(height: 24)
+                    .frame(height: 24, alignment: .top)
                 }
                 .padding(.horizontal, FileListLayout.hInset)
                 .padding(.top, 7)
                 .padding(.bottom, 2)
-            }
+                .frame(height: 54, alignment: .top)
 
-            HStack(spacing: 8) {
-                ForEach(actions, id: \.title) { action in
-                    Button(action: action.perform) {
-                        Label(action.title, systemImage: action.symbol)
+                Rectangle().fill(Color(nsColor: .separatorColor))
+                    .frame(height: 1)
+
+                // 操作行：固定高 46、.top 对齐；按钮在行内垂直居中。
+                // 无论按钮几个、是否换行，行高恒定，不影响上方存储条位置。
+                HStack(spacing: 8) {
+                    ForEach(actions, id: \.title) { action in
+                        Button(action: action.perform) {
+                            Label(action.title, systemImage: action.symbol)
+                        }
+                        .buttonStyle(.bordered)
+                        .controlSize(.small)
+                        .disabled(!action.isEnabled)
                     }
-                    .buttonStyle(.bordered)
-                    .controlSize(.small)
-                    .disabled(!action.isEnabled)
+                    Spacer()
+                    if paneMode?.current == .apps {
+                        Text(L.f("apps.countFormat", apps.count))
+                            .font(.caption)
+                            .foregroundStyle(.tertiary)
+                    } else {
+                        Text(selection.isEmpty
+                             ? L.f("count.itemsFormat", entries.count)
+                             : L.f("count.itemsSelectedFormat", entries.count, selection.count))
+                            .font(.caption)
+                            .foregroundStyle(.tertiary)
+                    }
                 }
-                Spacer()
-                if paneMode?.current == .apps {
-                    Text(L.f("apps.countFormat", apps.count))
-                        .font(.caption)
-                        .foregroundStyle(.tertiary)
-                } else {
-                    Text(selection.isEmpty
-                         ? L.f("count.itemsFormat", entries.count)
-                         : L.f("count.itemsSelectedFormat", entries.count, selection.count))
-                        .font(.caption)
-                        .foregroundStyle(.tertiary)
-                }
+                .padding(.horizontal, 12)
+                .frame(height: 46, alignment: .center)
             }
-            .padding(12)
+            .frame(height: Self.footerHeight, alignment: .top)
         }
-        .frame(minWidth: 360, maxWidth: .infinity, maxHeight: .infinity)
     }
+
+    /// 顶部工具栏（文件视图图标按钮栏 28pt / 应用视图搜索框栏 30pt）统一固定高度。
+    /// 取 32pt 安全容纳两者；锁定后两栏表头行起点严格一致，消除 2px 错位。
+    static let toolbarHeight: CGFloat = 32
+
+    /// 底部页脚恒定高度：分隔线(1) + 信息块(54) + 分隔线(1) + 操作行(46) = 102。
+    /// 每行均为固定高度，容器 .top 对齐——零 slack、零溢出，两栏严格一致。
+    static let footerHeight: CGFloat = 102
 
     /// 应用视图内容：搜索过滤后的应用列表
     @ViewBuilder
@@ -3577,7 +3841,10 @@ struct FilePaneView: View {
                         AppRowView(
                             app: app,
                             isBusy: busyApps.contains(app.packageName),
-                            onUninstall: { onUninstallApp?(app) })
+                            isSelected: selection.contains(app.packageName),
+                            onExport: { onExportApp?(app) },
+                            onUninstall: { onUninstallApp?(app) },
+                            onSelect: { selection = [app.packageName] })
                             .padding(.horizontal, FileListLayout.hInset)
                             .padding(.vertical, 2)
                     }
@@ -3889,11 +4156,14 @@ enum AndroidAppIcon {
     private static var cached: NSImage?
 }
 
-/// 应用列表单行：图标徽章 + 包名（可复制）+ 系统/第三方标识 + 体积 + 卸载按钮
+/// 应用列表单行：图标徽章 + 包名 + 系统/第三方标识 + 体积 + 导出/卸载按钮
 struct AppRowView: View {
     let app: AndroidApp
     let isBusy: Bool
+    let isSelected: Bool
+    let onExport: () -> Void
     let onUninstall: () -> Void
+    let onSelect: () -> Void
     @ObservedObject private var hover = HoverState()
 
     /// 图标：系统应用用 SF Symbol 盾牌，第三方用用户提供的 Android 机器人 SVG
@@ -3936,30 +4206,17 @@ struct AppRowView: View {
                 .lineLimit(1)
                 .truncationMode(.middle)
                 .help(app.packageName)
-            // 复制包名：hover 时显示复制图标，点击后短暂显示对勾反馈
-            Button {
-                NSPasteboard.general.clearContents()
-                NSPasteboard.general.setString(app.packageName, forType: .string)
-                hover.copied = true
-                // 1.2s 后恢复复制图标
-                DispatchQueue.main.asyncAfter(deadline: .now() + 1.2) {
-                    hover.copied = false
-                }
-            } label: {
-                if hover.copied {
-                    Image(systemName: "checkmark")
-                        .font(.system(size: 9, weight: .semibold))
-                        .foregroundStyle(Color.green)
+
+            // 加载中：包名后的固定槽位 + 渐隐，避免行内元素跳动/闪动。
+            ZStack {
+                if isBusy {
+                    ProgressView()
+                        .controlSize(.mini)
                         .transition(.opacity)
-                } else {
-                    Image(systemName: hover.hovering ? "doc.on.doc.fill" : "doc.on.doc")
-                        .font(.system(size: 8.5))
-                        .foregroundStyle(hover.hovering ? Color.secondary : Color.primary.opacity(0.2))
                 }
             }
-            .buttonStyle(.plain)
-            .focusable(false)
-            .help(L.s("apps.copyPackage"))
+            .frame(width: 16, height: 16)
+            .animation(.easeInOut(duration: 0.15), value: isBusy)
 
             Spacer(minLength: 8)
 
@@ -3973,6 +4230,16 @@ struct AppRowView: View {
                 .frame(width: FileListLayout.sizeWidth, alignment: .leading)
             HStack(spacing: 6) {
                 Button {
+                    onExport()
+                } label: {
+                    Label(L.s("apps.export"), systemImage: "square.and.arrow.down")
+                }
+                .buttonStyle(.bordered)
+                .controlSize(.mini)
+                .disabled(isBusy)
+                .help(L.s("apps.export"))
+
+                Button {
                     onUninstall()
                 } label: {
                     Label(L.s("apps.uninstall"), systemImage: "trash")
@@ -3982,15 +4249,15 @@ struct AppRowView: View {
                 .disabled(isBusy || app.isSystem)
                 .help(app.isSystem ? L.s("apps.systemNoUninstall") : "")
             }
-            .frame(width: 90, alignment: .leading)
-
-            if isBusy {
-                ProgressView()
-                    .controlSize(.mini)
-            }
+            .frame(width: 150, alignment: .leading)
         }
         .padding(.vertical, 4)
         .contentShape(Rectangle())
+        .background(
+            RoundedRectangle(cornerRadius: 4)
+                .fill(isSelected ? Color.accentColor.opacity(0.12) : Color.clear)
+        )
+        .onTapGesture { onSelect() }
         .onHover { hover.hovering = $0 }
     }
 }
