@@ -364,8 +364,16 @@ func entrySizeText(_ entry: FileEntry) -> String {
 
 func entryDateText(_ entry: FileEntry) -> String {
     guard let date = entry.modified else { return "—" }
-    return date.formatted(date: .numeric, time: .shortened)
+    return entryDateFormatter.string(from: date)
 }
+
+/// Modified 列显示格式：固定 yyyy-MM-dd HH:mm:ss（补零），不受系统区域影响
+private let entryDateFormatter: DateFormatter = {
+    let f = DateFormatter()
+    f.locale = Locale(identifier: "en_US_POSIX")
+    f.dateFormat = "yyyy-MM-dd HH:mm:ss"
+    return f
+}()
 
 /// SF Symbol 可用性缓存：部分符号仅较新系统提供，缺失时回退，避免图标空白
 private var symbolAvailability: [String: Bool] = [:]
@@ -3992,7 +4000,7 @@ enum FileListLayout {
     static let iconWidth: CGFloat = 18
     /// 列间距
     static let spacing: CGFloat = 8
-    static let sizeWidth: CGFloat = 80
+    static let sizeWidth: CGFloat = 60
     static let dateWidth: CGFloat = 150
 }
 
